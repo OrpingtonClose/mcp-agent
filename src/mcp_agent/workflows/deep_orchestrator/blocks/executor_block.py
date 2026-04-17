@@ -192,6 +192,14 @@ class ExecutorBlock(PipelineBlock):
         objective: str,
     ) -> TaskResult:
         """Execute a single task with timeout and retry logic."""
+        if self._max_task_retries <= 0:
+            return TaskResult(
+                task_name=task.name,
+                status=TaskStatus.FAILED,
+                error="max_task_retries is 0, no attempts made",
+            )
+
+        result: TaskResult | None = None
         for attempt in range(self._max_task_retries):
             try:
                 result = await asyncio.wait_for(
@@ -236,6 +244,7 @@ class ExecutorBlock(PipelineBlock):
                         retry_count=attempt + 1,
                     )
 
+        assert result is not None  # loop body always assigns result
         return result
 
     async def _execute_task_once(

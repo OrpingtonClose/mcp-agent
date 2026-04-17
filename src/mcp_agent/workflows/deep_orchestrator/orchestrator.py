@@ -259,6 +259,8 @@ class DeepOrchestrator(AugmentedLLM[MessageParamT, MessageT]):
 
             self.objective = objective
             self.start_time = time.time()
+            self.iteration = 0
+            self.replan_count = 0
             self._runner = self._build_pipeline()
 
             logger.info(
