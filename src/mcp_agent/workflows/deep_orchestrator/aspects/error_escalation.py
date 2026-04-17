@@ -55,8 +55,7 @@ class ErrorEscalationAspect(Aspect):
 
             if self._consecutive_failures >= self._max_consecutive_failures:
                 logger.error(
-                    "consecutive_failures=<%d> | escalating to "
-                    "EMERGENCY_STOP",
+                    "consecutive_failures=<%d> | escalating to EMERGENCY_STOP",
                     self._consecutive_failures,
                 )
                 result.routing = RoutingHint.EMERGENCY_STOP
@@ -69,7 +68,11 @@ class ErrorEscalationAspect(Aspect):
         ctx: BlockContext,
         error: Exception,
     ) -> Optional[BlockResult]:
-        self._consecutive_failures += 1
+        # Do NOT increment _consecutive_failures here.
+        # PipelineRunner calls after() even on the error path
+        # (base.py:340-348), and after() already increments the
+        # counter when it sees block_failed/error in metrics.
+        # Incrementing here would double-count each failure.
 
         if block.criticality == BlockCriticality.CRITICAL:
             logger.error(

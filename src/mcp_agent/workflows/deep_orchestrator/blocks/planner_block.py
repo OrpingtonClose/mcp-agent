@@ -120,79 +120,83 @@ class PlannerBlock(PipelineBlock):
         completed_steps = ctx.state.get("completed_step_descriptions", [])[-5:]
         knowledge_items = ctx.state.get("knowledge_items_for_planning", [])[:10]
 
-        # Give the planner actual tools so it can inspect before planning
+        # Give the planner actual tools so it can inspect before planning.
+        # Use async-with to ensure MCP connections are shut down.
         planner = Agent(
             name="StrategicPlanner",
             instruction=TOOL_AWARE_PLANNER_INSTRUCTION,
-            server_names=self._available_servers[:3],  # limit to avoid overload
+            server_names=self._available_servers[:3],
             context=self._app_context,
         )
 
-        llm = self._llm_factory(planner)
+        async with planner:
+            llm = await planner.attach_llm(self._llm_factory)
 
-        # Iterative plan creation with verification
-        previous_plan: Optional[Plan] = None
-        previous_errors = None
+            # Iterative plan creation with verification
+            previous_plan: Optional[Plan] = None
+            previous_errors = None
 
-        for attempt in range(self._max_verification_attempts):
-            context = get_planning_context(
-                objective=objective,
-                progress_summary=ctx.state.get("progress_summary", ""),
-                completed_steps=completed_steps,
-                knowledge_items=knowledge_items,
-                available_servers=self._available_servers,
-                available_agents=self._available_agents,
-            )
-
-            if previous_plan and previous_errors:
-                context += "\n\n<previous_failed_plan>\n"
-                context += previous_plan.model_dump_json(indent=2)
-                context += "\n</previous_failed_plan>"
-                context += (
-                    f"\n\n<plan_errors>\n"
-                    f"{previous_errors.get_error_summary()}\n"
-                    f"</plan_errors>"
+            for attempt in range(self._max_verification_attempts):
+                context = get_planning_context(
+                    objective=objective,
+                    progress_summary=ctx.state.get("progress_summary", ""),
+                    completed_steps=completed_steps,
+                    knowledge_items=knowledge_items,
+                    available_servers=self._available_servers,
+                    available_agents=self._available_agents,
                 )
 
-            prompt = get_full_plan_prompt(context)
-            plan: Plan = await retry_with_backoff(
-                lambda: llm.generate_structured(message=prompt, response_model=Plan),
-                max_attempts=2,
-            )
+                if previous_plan and previous_errors:
+                    context += "\n\n<previous_failed_plan>\n"
+                    context += previous_plan.model_dump_json(indent=2)
+                    context += "\n</previous_failed_plan>"
+                    context += (
+                        f"\n\n<plan_errors>\n"
+                        f"{previous_errors.get_error_summary()}"
+                        f"\n</plan_errors>"
+                    )
 
-            verification_result = self._plan_verifier.verify_plan(plan)
-
-            if verification_result.is_valid:
-                logger.info(
-                    "Created valid plan: %d steps, reasoning: %s",
-                    len(plan.steps),
-                    plan.reasoning[:100],
-                )
-                return BlockResult(
-                    metrics={
-                        "plan_steps": len(plan.steps),
-                        "plan_tasks": sum(len(s.tasks) for s in plan.steps),
-                        "verification_attempts": attempt + 1,
-                    },
-                    state_updates={
-                        "current_plan": plan,
-                        "plan_is_complete": plan.is_complete,
-                    },
-                    routing=(
-                        RoutingHint.FORCE_COMPLETE
-                        if plan.is_complete
-                        else RoutingHint.CONTINUE
+                prompt = get_full_plan_prompt(context)
+                plan: Plan = await retry_with_backoff(
+                    lambda: llm.generate_structured(
+                        message=prompt, response_model=Plan
                     ),
+                    max_attempts=2,
                 )
 
-            logger.warning(
-                "Plan verification failed (attempt %d/%d): %d errors",
-                attempt + 1,
-                self._max_verification_attempts,
-                len(verification_result.errors),
-            )
-            previous_plan = plan
-            previous_errors = verification_result
+                verification_result = self._plan_verifier.verify_plan(plan)
+
+                if verification_result.is_valid:
+                    logger.info(
+                        "Created valid plan: %d steps, reasoning: %s",
+                        len(plan.steps),
+                        plan.reasoning[:100],
+                    )
+                    return BlockResult(
+                        metrics={
+                            "plan_steps": len(plan.steps),
+                            "plan_tasks": sum(len(s.tasks) for s in plan.steps),
+                            "verification_attempts": attempt + 1,
+                        },
+                        state_updates={
+                            "current_plan": plan,
+                            "plan_is_complete": plan.is_complete,
+                        },
+                        routing=(
+                            RoutingHint.FORCE_COMPLETE
+                            if plan.is_complete
+                            else RoutingHint.CONTINUE
+                        ),
+                    )
+
+                logger.warning(
+                    "Plan verification failed (attempt %d/%d): %d errors",
+                    attempt + 1,
+                    self._max_verification_attempts,
+                    len(verification_result.errors),
+                )
+                previous_plan = plan
+                previous_errors = verification_result
 
         # All attempts exhausted -- return last plan with warning
         logger.error(
@@ -202,10 +206,13 @@ class PlannerBlock(PipelineBlock):
         return BlockResult(
             metrics={
                 "plan_steps": len(plan.steps) if plan else 0,
-                "verification_attempts": self._max_verification_attempts,
+                "verification_attempts": (self._max_verification_attempts),
                 "plan_validation_failed": True,
             },
-            state_updates={"current_plan": plan, "plan_is_complete": False},
+            state_updates={
+                "current_plan": plan,
+                "plan_is_complete": False,
+            },
             routing=RoutingHint.CONTINUE,
             diagnosis="Plan verification failed after max attempts",
         )

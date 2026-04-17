@@ -125,7 +125,8 @@ class VerifierBlock(PipelineBlock):
         knowledge_summary = ctx.state.get("knowledge_summary", "")
         artifacts = ctx.state.get("artifacts", {})
 
-        # Give verifier actual tools to inspect the workspace
+        # Give verifier actual tools to inspect the workspace.
+        # Use async-with to ensure MCP connections are shut down.
         verifier = Agent(
             name="ObjectiveVerifier",
             instruction=TOOL_AWARE_VERIFIER_INSTRUCTION,
@@ -133,63 +134,64 @@ class VerifierBlock(PipelineBlock):
             context=self._app_context,
         )
 
-        llm = self._llm_factory(verifier)
+        async with verifier:
+            llm = await verifier.attach_llm(self._llm_factory)
 
-        context = get_verification_context(
-            objective=objective,
-            progress_summary=progress_summary,
-            knowledge_summary=knowledge_summary,
-            artifacts=artifacts,
-        )
-
-        prompt = get_verification_prompt(context)
-
-        try:
-            result: VerificationResult = await llm.generate_structured(
-                message=prompt,
-                response_model=VerificationResult,
+            context = get_verification_context(
+                objective=objective,
+                progress_summary=progress_summary,
+                knowledge_summary=knowledge_summary,
+                artifacts=artifacts,
             )
 
-            is_complete = (
-                result.is_complete and result.confidence >= self._min_confidence
-            )
+            prompt = get_verification_prompt(context)
 
-            logger.info(
-                "Verification: complete=%s, confidence=%.2f, missing=%d",
-                result.is_complete,
-                result.confidence,
-                len(result.missing_elements),
-            )
+            try:
+                result: VerificationResult = await llm.generate_structured(
+                    message=prompt,
+                    response_model=VerificationResult,
+                )
 
-            routing = RoutingHint.CONTINUE
-            if is_complete:
-                routing = RoutingHint.FORCE_COMPLETE
-            elif not result.is_complete:
-                routing = RoutingHint.REPLAN
+                is_complete = (
+                    result.is_complete and result.confidence >= self._min_confidence
+                )
 
-            return BlockResult(
-                metrics={
-                    "is_complete": result.is_complete,
-                    "confidence": result.confidence,
-                    "missing_elements": len(result.missing_elements),
-                },
-                state_updates={
-                    "verification_complete": is_complete,
-                    "verification_confidence": result.confidence,
-                    "verification_reasoning": result.reasoning,
-                    "missing_elements": result.missing_elements,
-                },
-                routing=routing,
-            )
+                logger.info(
+                    "Verification: complete=%s, confidence=%.2f, missing=%d",
+                    result.is_complete,
+                    result.confidence,
+                    len(result.missing_elements),
+                )
 
-        except Exception as e:
-            logger.error("Verification failed: %s", e)
-            return BlockResult(
-                metrics={"error": str(e), "block_failed": True},
-                state_updates={
-                    "verification_complete": False,
-                    "verification_confidence": 0.0,
-                },
-                routing=RoutingHint.CONTINUE,
-                diagnosis=f"Verification error: {e}",
-            )
+                routing = RoutingHint.CONTINUE
+                if is_complete:
+                    routing = RoutingHint.FORCE_COMPLETE
+                elif not result.is_complete:
+                    routing = RoutingHint.REPLAN
+
+                return BlockResult(
+                    metrics={
+                        "is_complete": result.is_complete,
+                        "confidence": result.confidence,
+                        "missing_elements": len(result.missing_elements),
+                    },
+                    state_updates={
+                        "verification_complete": is_complete,
+                        "verification_confidence": result.confidence,
+                        "verification_reasoning": result.reasoning,
+                        "missing_elements": result.missing_elements,
+                    },
+                    routing=routing,
+                )
+
+            except Exception as e:
+                logger.error("Verification failed: %s", e)
+                return BlockResult(
+                    metrics={"error": str(e), "block_failed": True},
+                    state_updates={
+                        "verification_complete": False,
+                        "verification_confidence": 0.0,
+                    },
+                    routing=RoutingHint.CONTINUE,
+                    diagnosis=f"Verification error: {e}",
+                )

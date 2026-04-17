@@ -456,7 +456,7 @@ class DeepOrchestrator(AugmentedLLM[MessageParamT, MessageT]):
 
             # Context window management (configurable, not hardcoded 40000)
             context_size = self.memory.estimate_context_size()
-            max_context = getattr(self.config.context, "max_context_tokens", 40000)
+            max_context = self.config.context.context_window_limit
             if context_size > max_context:
                 logger.warning(
                     "context_size=<%d>, max=<%d> | trimming",
