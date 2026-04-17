@@ -76,12 +76,21 @@ class ErrorEscalationAspect(Aspect):
 
         if block.criticality == BlockCriticality.CRITICAL:
             logger.error(
-                "CRITICAL block '%s' failed, propagating error: %s",
+                "CRITICAL block '%s' failed: %s | routing EMERGENCY_STOP",
                 block.name,
                 error,
             )
-            # Return None to let the exception propagate
-            return None
+            # Return EMERGENCY_STOP so the orchestrator aborts.
+            # Returning None would let PipelineRunner create a default
+            # result with CONTINUE routing, silently swallowing the error.
+            return BlockResult(
+                metrics={
+                    "error": str(error),
+                    "block_failed": True,
+                },
+                routing=RoutingHint.EMERGENCY_STOP,
+                diagnosis=f"CRITICAL block '{block.name}' failed: {error}",
+            )
 
         # BEST_EFFORT: absorb the error, log, continue
         logger.warning(

@@ -216,8 +216,14 @@ class DeepOrchestrator(AugmentedLLM[MessageParamT, MessageT]):
             stall_timeout_seconds=300.0,
             force_complete_on_stall=False,
         )
+        token_counter = (
+            self.context.token_counter
+            if self.context and hasattr(self.context, "token_counter")
+            else None
+        )
         budget = BudgetTrackingAspect(
             budget=self.budget,
+            token_counter=token_counter,
             critical_threshold=self.config.policy.budget_critical_threshold,
         )
         self._health_gate = HealthGateAspect(failure_rate_threshold=0.5)
@@ -414,6 +420,13 @@ class DeepOrchestrator(AugmentedLLM[MessageParamT, MessageT]):
                             logger.info("replan_added=<0> | no new steps, completing")
                             break
                         self.replan_count += 1
+                        if self.replan_count >= self.config.execution.max_replans:
+                            logger.warning(
+                                "replan_count=<%d/%d> | max replans reached",
+                                self.replan_count,
+                                self.config.execution.max_replans,
+                            )
+                            break
                     else:
                         break
 

@@ -155,8 +155,15 @@ class KnowledgeStore:
                 )
                 # Keep both but flag -- higher confidence wins for retrieval
                 if item.confidence > best_match.item.confidence:
+                    old_category = best_match.item.category
                     best_match.item = item
                     best_match.cross_references += 1
+                    # Update category index if category changed
+                    if item.category != old_category:
+                        cat_list = self._by_category.get(old_category, [])
+                        if best_match in cat_list:
+                            cat_list.remove(best_match)
+                        self._by_category[item.category].append(best_match)
                     return True
                 else:
                     best_match.cross_references += 1
